@@ -440,6 +440,193 @@ check("精简 API 已注册",
 r = client.get("/static/app.js")
 check("app.js 含精简逻辑", r.status_code == 200 and "/api/minimize" in r.text)
 
+# ---------------------------------------------------------------------------
+# 11. 规则变更回归检查
+# ---------------------------------------------------------------------------
+
+section("规则变更回归检查")
+
+from app.regression import regression_check  # noqa: E402
+
+# 无变化：仅源码行号 / 注释不同，模拟结果一致
+out = regression_check(
+    "# 旧版头注释\n\nREWRITE ^/a$ /b next\n",
+    "REWRITE ^/a$ /b next\n",
+    ["/a", "/z"],
+)
+check("回归检查成功", out["ok"] is True)
+check("全部无变化", out["changed_count"] == 0
+      and all(not p["changed"] for p in out["paths"]))
+check("未变化路径不产出分叉", all(p["divergence"] is None for p in out["paths"]))
+check("规则计数分别给出", out["old_rule_count"] == 1 and out["new_rule_count"] == 1)
+
+# REWRITE 输出不同：标记 final_url 变化，首次分叉为动作输出
+out = regression_check(
+    "REWRITE ^/a/(.*)$ /b/$1 next\n",
+    "REWRITE ^/a/(.*)$ /c/$1 next\n",
+    ["/a/x"],
+)
+p = out["paths"][0]
+check("改写输出变化", p["changed"] and [c["field"] for c in p["field_changes"]] == ["final_url"])
+d = p["divergence"]
+check("分叉类型 action", d["type"] == "action" and d["index"] == 1)
+check("分叉原因为输出不同", "输出" in d["reason"])
+check("分叉两侧动作含输入输出与原行号",
+      d["old_action"]["kind"] == "rewrite" and d["old_action"]["line"] == 1
+      and d["old_action"]["input"] == "/a/x" and d["old_action"]["output"] == "/b/x"
+      and d["new_action"]["output"] == "/c/x")
+check("动作对照跳过未命中步骤", d["old_action"]["rule"].startswith("REWRITE"))
+
+# 行号不同不算分叉：同样语义的规则在不同行，动作比较结果一致
+out = regression_check(
+    "REWRITE ^/a$ /b next\n",
+    "# 注释\nREWRITE ^/a$ /b next\n",
+    ["/a"],
+)
+check("行号差异不算分叉", out["paths"][0]["changed"] is False)
+
+# 新版多一条命中动作：一侧动作为 null，首次分叉给出另一侧行号与动作
+out = regression_check(
+    "REWRITE ^/a$ /b next\n",
+    "REWRITE ^/a$ /b next\nREWRITE ^/b$ /c last\n",
+    ["/a"],
+)
+p = out["paths"][0]
+d = p["divergence"]
+check("新版多动作分叉", p["changed"] and d["type"] == "action"
+      and d["old_action"] is None and d["new_action"] is not None
+      and d["new_action"]["line"] == 2)
+
+# 旧版多动作：新版一侧为 null
+out = regression_check(
+    "REWRITE ^/a$ /b next\nREWRITE ^/b$ /c next\n",
+    "REWRITE ^/a$ /b next\n",
+    ["/a"],
+)
+d = out["paths"][0]["divergence"]
+check("旧版多动作分叉", d["new_action"] is None and d["old_action"] is not None)
+
+# REDIRECT 状态码不同：location 相同也判变化，分叉点为状态码
+out = regression_check(
+    "REDIRECT ^/a$ /b 302\n",
+    "REDIRECT ^/a$ /b 301\n",
+    ["/a"],
+)
+p = out["paths"][0]
+check("状态码变化", [c["field"] for c in p["field_changes"]] == ["status"])
+check("分叉含状态码不同", "状态码" in p["divergence"]["reason"]
+      and p["divergence"]["old_action"]["status"] == 302
+      and p["divergence"]["new_action"]["status"] == 301)
+
+# Location 不同（状态码相同）：location 与最终 URL 均随之变化
+out = regression_check(
+    "REDIRECT ^/a$ /b 302\n",
+    "REDIRECT ^/a$ /d 302\n",
+    ["/a"],
+)
+fields = {c["field"] for c in out["paths"][0]["field_changes"]}
+check("Location 变化", fields == {"final_url", "location"}, fields)
+
+# 动作序列一致但终态不同：步数耗在未命中步骤上，旧版先循环(508)、新版先超步(509)
+term_old = "REWRITE ^/a$ /b last\nREWRITE ^/b$ /a last\n"
+term_new = (
+    "REWRITE ^/a$ /b last\n"
+    "REWRITE ^/n1$ /z last\nREWRITE ^/n2$ /z last\n"
+    "REWRITE ^/b$ /a last\n"
+    "REWRITE ^/n3$ /z last\nREWRITE ^/n4$ /z last\n"
+)
+out = regression_check(term_old, term_new, ["/a"], max_steps=5)
+p = out["paths"][0]
+d = p["divergence"]
+check("同动作不同终态判变化", p["changed"]
+      and p["old"]["status"] == 508 and p["new"]["status"] == 509)
+check("分叉类型为终止差异", d["type"] == "terminal" and d["index"] is None)
+term_fields = {t["field"] for t in d["terminal_diff"]}
+check("终止差异列出不同字段", term_fields == {"status", "finish_reason"}, term_fields)
+check("命中动作数相同", p["old_hit_count"] == p["new_hit_count"] == 2)
+
+# 跟随重定向选项沿用：是否跟随导致新旧终态不同可被捕获
+out = regression_check(
+    "REDIRECT ^/a$ /b 302\nREWRITE ^/b$ /c next\n",
+    "REDIRECT ^/a$ /b 302\n",
+    ["/a"], follow_redirects=True,
+)
+p = out["paths"][0]
+check("跟随重定向选项生效", p["changed"] and p["old"]["final_url"] == "/c"
+      and p["new"]["final_url"] == "/b")
+
+# 两侧语法错误分别提示且不抛异常
+out = regression_check(
+    "REWITE x y\nREWRITE ^/a$ /b next\n",
+    "REWRITE ^/a( /b\nREDIRECT ^/c$ /d 299\n",
+    ["/a"],
+)
+check("双侧语法错误返回 ok=False", not out["ok"])
+check("旧版错误独立", len(out["errors"]["old"]) == 1
+      and out["errors"]["old"][0]["line"] == 1)
+check("新版错误独立", len(out["errors"]["new"]) == 2
+      and {e["line"] for e in out["errors"]["new"]} == {1, 2})
+check("错误带行列与原文", all(e["col"] >= 1 and e["source"]
+      for side in out["errors"].values() for e in side))
+
+# 只有一侧有错
+out = regression_check("REWRITE ^/a$ /b next\n", "REWITE x y\n", ["/a"])
+check("单侧错误", not out["ok"] and not out["errors"]["old"] and len(out["errors"]["new"]) == 1)
+
+# 路径校验沿用规则精简的同一套规则
+try:
+    regression_check("REWRITE ^/a$ /b next", "REWRITE ^/a$ /b next", ["noslash"])
+    check("非斜杠路径报错", False)
+except MinimizeValidationError:
+    check("非斜杠路径报错", True)
+try:
+    regression_check("", "", [f"/p{i}" for i in range(51)])
+    check("超过 50 条路径报错", False)
+except MinimizeValidationError:
+    check("超过 50 条路径报错", True)
+
+section("回归检查 HTTP API")
+
+
+def post_reg(body):
+    return client.post("/api/regression", json=body)
+
+
+r = post_reg({"old_rules": "REWRITE ^/a/(.*)$ /b/$1 next",
+              "rules": "REWRITE ^/a/(.*)$ /c/$1 next",
+              "paths": ["/a/x", " /a/x "], "max_steps": 100,
+              "follow_redirects": False})
+check("POST /api/regression 200", r.status_code == 200, r.text)
+d = r.json()
+check("路径去重并报告变化", d["total"] == 1 and d["changed_count"] == 1
+      and d["paths"][0]["divergence"]["type"] == "action")
+
+r = post_reg({"old_rules": "REWITE x y", "rules": "REWRITE ^/a( /b", "paths": ["/a"]})
+d = r.json()
+check("API 双侧错误 200/ok=False",
+      r.status_code == 200 and d["ok"] is False
+      and len(d["errors"]["old"]) == 1 and len(d["errors"]["new"]) == 1)
+
+r = post_reg({"old_rules": "", "rules": "", "paths": ["bad"]})
+check("API 非法路径 422", r.status_code == 422)
+
+r = post_reg({"old_rules": "", "rules": "", "paths": []})
+check("API 空路径 422", r.status_code == 422)
+
+r = post_reg({"old_rules": "", "rules": "", "paths": ["/a"], "max_steps": 9999})
+check("API 步数越界 422", r.status_code == 422)
+
+r = client.get("/")
+html = r.text
+check("首页含回归检查入口", 'id="regressionBtn"' in html and 'id="oldRulesEditor"' in html)
+check("首页含回归路径输入框", 'id="regressionPathsInput"' in html)
+check("首页含回归结果弹窗", 'id="regressionModal"' in html)
+check("回归 API 已注册",
+      "/api/regression" in {route.path for route in app.routes})
+
+r = client.get("/static/app.js")
+check("app.js 含回归逻辑", r.status_code == 200 and "/api/regression" in r.text)
+
 print(f"\n{'='*50}")
 print(f"通过 {PASS}，失败 {FAIL}")
 sys.exit(1 if FAIL else 0)

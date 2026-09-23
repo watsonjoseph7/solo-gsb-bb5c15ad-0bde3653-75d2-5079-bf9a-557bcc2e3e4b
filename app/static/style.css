@@ -982,6 +982,205 @@ body {
   font-weight: 700;
 }
 
+/* ---------- 规则变更回归检查 ---------- */
+
+.panel-left {
+  overflow-y: auto;
+}
+
+.regression-box {
+  flex: 0 0 auto;
+  padding: 14px 16px 16px;
+  border-top: 1px solid var(--border);
+  background: #f7f9ff;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.old-rules-details {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.old-rules-summary {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--primary-dark);
+  cursor: pointer;
+  user-select: none;
+}
+
+.old-rules-editor {
+  width: 100%;
+  min-height: 120px;
+  max-height: 240px;
+  resize: vertical;
+  padding: 9px 12px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 13px;
+  line-height: 1.6;
+  color: var(--text);
+  background: #fff;
+  white-space: pre;
+  overflow: auto;
+}
+
+.old-rules-editor:focus {
+  outline: none;
+  border-color: var(--primary);
+  box-shadow: 0 0 0 3px rgba(48, 86, 211, 0.14);
+}
+
+.modal-wide {
+  width: min(1040px, 100%);
+}
+
+/* 两侧语法错误分别提示 */
+.reg-error-block {
+  border: 1px solid #f2c4c0;
+  border-radius: 8px;
+  background: var(--red-soft);
+  padding: 8px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.reg-error-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--red);
+  margin-bottom: 4px;
+}
+
+/* 首次分叉的动作对照 */
+.reg-divergence {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: #fff;
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.reg-divergence-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: var(--red);
+}
+
+.reg-divergence-title.terminal {
+  color: var(--amber);
+}
+
+.reg-action-pair {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 10px;
+}
+
+.reg-action-side {
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+}
+
+.reg-side-tag {
+  align-self: flex-start;
+  font-size: 10px;
+  font-weight: 700;
+  border-radius: 4px;
+  padding: 1px 6px;
+}
+
+.reg-side-tag.side-old {
+  background: var(--slate-soft);
+  color: var(--slate);
+}
+
+.reg-side-tag.side-new {
+  background: var(--primary-soft);
+  color: var(--primary);
+}
+
+.reg-action-col {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 7px 9px;
+  display: flex;
+  flex-direction: column;
+  gap: 5px;
+  min-width: 0;
+  background: #fcfdff;
+}
+
+.reg-action-kind {
+  font-size: 12px;
+  font-weight: 700;
+  color: var(--slate);
+}
+
+.reg-action-rule {
+  display: flex;
+  align-items: baseline;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.reg-action-rule code {
+  font-family: var(--mono);
+  font-size: 12px;
+  word-break: break-all;
+}
+
+.reg-action-line {
+  font-size: 11px;
+  color: var(--muted);
+}
+
+.reg-action-io {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 12px;
+}
+
+.reg-action-none {
+  font-size: 12px;
+  color: var(--muted);
+  font-style: italic;
+}
+
+/* 终止差异 */
+.reg-terminal-list {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.reg-terminal-row {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  flex-wrap: wrap;
+  font-family: var(--mono);
+  font-size: 12.5px;
+}
+
+.reg-terminal-new {
+  color: var(--red);
+  font-weight: 700;
+  word-break: break-all;
+}
+
 /* ---------- Toast ---------- */
 
 .toast {
@@ -1016,5 +1215,9 @@ body {
 
   .panel {
     min-height: 480px;
+  }
+
+  .reg-action-pair {
+    grid-template-columns: 1fr;
   }
 }

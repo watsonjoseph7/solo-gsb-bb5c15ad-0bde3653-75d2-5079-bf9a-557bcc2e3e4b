@@ -126,9 +126,7 @@ editor.addEventListener("keydown", (e) => {
       editor.value.slice(0, start) + "  " + editor.value.slice(end);
     editor.selectionStart = editor.selectionEnd = start + 2;
   }
-});
-
-// ---------------------------------------------------------------------------
+});// ---------------------------------------------------------------------------
 // 示例载入
 // ---------------------------------------------------------------------------
 
@@ -165,8 +163,8 @@ loadExampleBtn.addEventListener("click", () => {
 // 错误定位
 // ---------------------------------------------------------------------------
 
-function jumpToError(err) {
-  const lines = editor.value.split("\n");
+function jumpToError(err, target = editor) {
+  const lines = target.value.split("\n");
   const rawLine = lines[err.line - 1] ?? "";
   // 服务端的列基于「去掉首尾空白与注释」后的行，需要加回首列空白偏移
   const lead = rawLine.length - rawLine.trimStart().length;
@@ -176,11 +174,11 @@ function jumpToError(err) {
   const start = offset + lead + col;
   const length = Math.max(1, err.length || 1);
 
-  editor.focus();
-  editor.setSelectionRange(start, Math.min(start + length, editor.value.length));
+  target.focus();
+  target.setSelectionRange(start, Math.min(start + length, target.value.length));
   // 滚动到目标行
-  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20;
-  editor.scrollTop = Math.max(0, (err.line - 1) * lineHeight - 40);
+  const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 20;
+  target.scrollTop = Math.max(0, (err.line - 1) * lineHeight - 40);
 }
 
 function renderErrors(errors) {
@@ -609,12 +607,12 @@ document.addEventListener("keydown", (e) => {
 // ---------------------------------------------------------------------------
 
 // 前端先做一轮轻校验，返回错误信息（null 表示通过）
-function validateMinimizePaths(lines) {
+function validatePathLines(lines) {
   if (!lines.length) {
-    return "请输入至少一条待保障的请求路径（每行一条）";
+    return "请输入至少一条请求路径（每行一条）";
   }
   if (lines.length > 50) {
-    return `待保障路径最多 50 条（当前 ${lines.length} 条），请精简后重试`;
+    return `请求路径最多 50 条（当前 ${lines.length} 条），请精简后重试`;
   }
   for (let i = 0; i < lines.length; i += 1) {
     const p = lines[i];
@@ -629,6 +627,10 @@ function validateMinimizePaths(lines) {
     }
   }
   return null;
+}
+
+function validateMinimizePaths(lines) {
+  return validatePathLines(lines).replace(/^请输入至少一条请求路径/, "请输入至少一条待保障的请求路径");
 }
 
 function resultSignature(result) {
@@ -888,6 +890,367 @@ document.addEventListener("keydown", (e) => {
   if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === "Enter") {
     e.preventDefault();
     runMinimize();
+  }
+});
+
+// ---------------------------------------------------------------------------
+// 规则变更回归检查
+// ---------------------------------------------------------------------------
+
+const oldRulesEditor = $("oldRulesEditor");
+const oldRulesDetails = $("oldRulesDetails");
+const regressionPathsInput = $("regressionPathsInput");
+const regressionBtn = $("regressionBtn");
+const regressionCount = $("regressionCount");
+const regressionModal = $("regressionModal");
+const regressionModalClose = $("regressionModalClose");
+const regressionModalBody = $("regressionModalBody");
+
+// 旧版规则编辑器同样用 Tab 插入两个空格
+oldRulesEditor.addEventListener("keydown", (e) => {
+  if (e.key === "Tab") {
+    e.preventDefault();
+    const start = oldRulesEditor.selectionStart;
+    const end = oldRulesEditor.selectionEnd;
+    oldRulesEditor.value =
+      oldRulesEditor.value.slice(0, start) + "  " + oldRulesEditor.value.slice(end);
+    oldRulesEditor.selectionStart = oldRulesEditor.selectionEnd = start + 2;
+  }
+});
+
+// 在指定编辑器中定位某一原行号（选中该行）
+function focusEditorLineIn(target, lineNo) {
+  const text = target.value;
+  let start = 0;
+  for (let i = 1; i < lineNo; i += 1) {
+    const next = text.indexOf("\n", start);
+    if (next === -1) {
+      start = text.length;
+      break;
+    }
+    start = next + 1;
+  }
+  const nl = text.indexOf("\n", start);
+  const end = nl === -1 ? text.length : nl;
+  target.focus();
+  target.setSelectionRange(start, Math.max(start, end));
+  const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 20;
+  target.scrollTop = Math.max(0, (lineNo - 1) * lineHeight - 40);
+}
+
+const FIELD_LABEL = {
+  status: "最终状态码",
+  final_url: "最终 URL",
+  location: "Location",
+  finish_reason: "结束原因",
+};
+
+function formatFieldValue(field, value) {
+  if (field === "status") return `HTTP ${value}`;
+  if (field === "finish_reason") return REASON_TEXT[value] || value;
+  return value || "—";
+}
+
+const ACTION_LABEL = {
+  rewrite: "REWRITE 内部改写",
+  redirect: "REDIRECT 重定向",
+};
+
+// 渲染一侧的语法错误列表（点击可跳转到对应编辑器的行列，不覆盖任何输入）
+function renderRegressionErrors(errors, side, targetEditor) {
+  const block = el("div", "reg-error-block");
+  const title = el("div", "reg-error-title", `${side}规则存在 ${errors.length} 个语法错误`);
+  block.appendChild(title);
+  errors.forEach((err) => {
+    const item = el("div", "error-item");
+    const pos = el("span", "error-pos", `第 ${err.line} 行 第 ${err.col} 列`);
+    const msg = el("span", "error-msg", err.message);
+    item.append(pos, msg);
+    if (err.source) item.title = err.source;
+    item.addEventListener("click", () => {
+      closeRegressionModal();
+      oldRulesDetails.open = targetEditor === oldRulesEditor;
+      jumpToError(err, targetEditor);
+    });
+    block.appendChild(item);
+  });
+  return block;
+}
+
+function renderActionCol(action) {
+  const col = el("div", "reg-action-col");
+  if (!action) {
+    col.appendChild(el("span", "reg-action-none", "（无更多命中动作）"));
+    return col;
+  }
+  col.appendChild(el("div", "reg-action-kind", ACTION_LABEL[action.kind] || action.kind));
+  const ruleLine = el("div", "reg-action-rule");
+  ruleLine.appendChild(el("code", "", action.rule || ""));
+  ruleLine.appendChild(el("span", "reg-action-line", `（第 ${action.line} 行）`));
+  col.appendChild(ruleLine);
+
+  const io = el("div", "reg-action-io");
+  if (action.kind === "rewrite") {
+    io.appendChild(el("span", "path-old", action.input));
+    io.appendChild(el("span", "arrow", "→"));
+    io.appendChild(el("span", "path-new", action.output));
+  } else {
+    io.appendChild(el("span", "", `HTTP ${action.status} → Location: `));
+    io.appendChild(el("span", "path-new", action.output));
+  }
+  col.appendChild(io);
+  return col;
+}
+
+function renderDivergence(d) {
+  const box = el("div", "reg-divergence");
+  if (d.type === "action") {
+    box.appendChild(
+      el(
+        "div",
+        "reg-divergence-title",
+        `首次分叉：第 ${d.index} 个命中动作 — ${d.reason}`
+      )
+    );
+    const cols = el("div", "reg-action-pair");
+    const oldColWrap = el("div", "reg-action-side");
+    oldColWrap.appendChild(el("span", "reg-side-tag side-old", "旧版"));
+    oldColWrap.appendChild(renderActionCol(d.old_action));
+    const newColWrap = el("div", "reg-action-side");
+    newColWrap.appendChild(el("span", "reg-side-tag side-new", "新版"));
+    newColWrap.appendChild(renderActionCol(d.new_action));
+    cols.append(oldColWrap, newColWrap);
+    box.appendChild(cols);
+  } else {
+    box.appendChild(
+      el(
+        "div",
+        "reg-divergence-title terminal",
+        `终止差异：${d.reason}`
+      )
+    );
+    const list = el("div", "reg-terminal-list");
+    d.terminal_diff.forEach((diff) => {
+      const row = el("div", "reg-terminal-row");
+      row.appendChild(el("span", "min-path-label", FIELD_LABEL[diff.field] || diff.field));
+      row.appendChild(el("code", "", formatFieldValue(diff.field, diff.old)));
+      row.appendChild(el("span", "arrow", "→"));
+      row.appendChild(el("code", "reg-terminal-new", formatFieldValue(diff.field, diff.new)));
+      list.appendChild(row);
+    });
+    box.appendChild(list);
+  }
+  return box;
+}
+
+function renderFieldChangeGrid(item) {
+  const grid = el("div", "min-path-grid");
+  const fields = ["status", "final_url", "location", "finish_reason"];
+  fields.forEach((field) => {
+    const oldVal = formatFieldValue(field, item.old[field]);
+    const newVal = formatFieldValue(field, item.new[field]);
+    const equal = oldVal === newVal;
+    const cell = el("div", "min-path-field");
+    cell.appendChild(el("span", "min-path-label", FIELD_LABEL[field]));
+    const vals = el("div", `min-path-vals ${equal ? "" : "changed"}`);
+    const oldSide = el("div", "min-path-val");
+    oldSide.appendChild(el("span", "min-path-tag", "旧"));
+    oldSide.appendChild(el("code", "", oldVal));
+    const newSide = el("div", "min-path-val");
+    newSide.appendChild(el("span", "min-path-tag", "新"));
+    newSide.appendChild(el("code", "", newVal));
+    vals.append(oldSide, newSide);
+    cell.appendChild(vals);
+    grid.appendChild(cell);
+  });
+  return grid;
+}
+
+function renderRegressionPathCard(item) {
+  const card = el("div", `min-path-card ${item.changed ? "diff" : "same"}`);
+
+  const head = el("div", "min-path-head");
+  head.appendChild(el("code", "min-path-name", item.path));
+  head.appendChild(
+    el(
+      "span",
+      `min-path-badge ${item.changed ? "bad" : "ok"}`,
+      item.changed ? "✗ 结果变化" : "✓ 无变化"
+    )
+  );
+  card.appendChild(head);
+
+  if (!item.changed) {
+    card.appendChild(
+      el(
+        "div",
+        "muted",
+        `旧版 / 新版各命中 ${item.old_hit_count} / ${item.new_hit_count} 个动作，最终结果一致`
+      )
+    );
+    return card;
+  }
+
+  card.appendChild(renderFieldChangeGrid(item));
+  card.appendChild(
+    el(
+      "div",
+      "muted",
+      `命中动作数：旧版 ${item.old_hit_count} 个 · 新版 ${item.new_hit_count} 个（未命中步骤与行号不参与比较）`
+    )
+  );
+  if (item.divergence) card.appendChild(renderDivergence(item.divergence));
+  return card;
+}
+
+function closeRegressionModal() {
+  regressionModal.hidden = true;
+  regressionModalBody.innerHTML = "";
+}
+
+function renderRegressionResult(data) {
+  regressionModalBody.innerHTML = "";
+
+  const summaryRow = el("div", "min-result-summary");
+  summaryRow.appendChild(
+    el(
+      "strong",
+      "",
+      data.changed_count > 0
+        ? `${data.changed_count} / ${data.total} 条路径的最终结果发生变化`
+        : `${data.total} 条路径全部无变化，本次规则变更对这些路径是回归安全的`
+    )
+  );
+  summaryRow.appendChild(
+    el(
+      "span",
+      "muted",
+      `旧版解析出 ${data.old_rule_count} 条有效规则 · 新版 ${data.new_rule_count} 条；按最终状态码、最终 URL、Location、结束原因四项判定`
+    )
+  );
+  regressionModalBody.appendChild(summaryRow);
+
+  const list = el("div", "min-path-list");
+  data.paths.forEach((item) => list.appendChild(renderRegressionPathCard(item)));
+  regressionModalBody.appendChild(list);
+
+  regressionModal.hidden = false;
+}
+
+regressionModalClose.addEventListener("click", closeRegressionModal);
+regressionModal.addEventListener("click", (e) => {
+  if (e.target === regressionModal) closeRegressionModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !regressionModal.hidden) closeRegressionModal();
+});
+
+async function runRegression() {
+  const raw = regressionPathsInput.value;
+  const lines = raw
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const message = validatePathLines(lines);
+  if (message) {
+    toast(message, true);
+    regressionPathsInput.focus();
+    return;
+  }
+
+  const maxSteps = parseInt(maxStepsInput.value, 10);
+  if (!Number.isFinite(maxSteps) || maxSteps < 1 || maxSteps > 500) {
+    toast("步数上限需为 1–500 之间的整数", true);
+    maxStepsInput.focus();
+    return;
+  }
+
+  const body = {
+    old_rules: oldRulesEditor.value,
+    rules: editor.value,
+    paths: lines,
+    max_steps: maxSteps,
+    follow_redirects: followRedirectsInput.checked,
+  };
+
+  regressionBtn.disabled = true;
+  regressionBtn.textContent = "⏳ 检查中…";
+  regressionCount.textContent = "";
+
+  try {
+    const res = await fetch("/api/regression", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 422 || res.status === 400) {
+      const payload = await res.json();
+      let msg;
+      if (payload.detail && payload.detail[0]) {
+        msg = payload.detail[0].msg;
+      } else if (typeof payload.detail === "string") {
+        msg = payload.detail;
+      } else {
+        msg = "请求参数不合法";
+      }
+      // pydantic v2 的 ValueError 消息带固定前缀，去掉以便直接展示
+      msg = msg.replace(/^Value error,\s*/, "");
+      toast(msg, true);
+      return;
+    }
+
+    const data = await res.json();
+
+    if (!data.ok) {
+      // 两侧语法错误分别提示，且不覆盖任何输入
+      regressionModalBody.innerHTML = "";
+      const summaryRow = el("div", "min-result-summary");
+      summaryRow.appendChild(el("strong", "", "规则存在语法错误，未执行回归检查"));
+      summaryRow.appendChild(
+        el("span", "muted", "旧版与新版错误分别列出，点击任意一条可跳转到对应位置；编辑器内容保持不变")
+      );
+      regressionModalBody.appendChild(summaryRow);
+      if (data.errors.old.length) {
+        regressionModalBody.appendChild(
+          renderRegressionErrors(data.errors.old, "旧版", oldRulesEditor)
+        );
+      }
+      if (data.errors.new.length) {
+        regressionModalBody.appendChild(
+          renderRegressionErrors(data.errors.new, "新版（当前编辑器）", editor)
+        );
+      }
+      regressionModal.hidden = false;
+      const total = data.errors.old.length + data.errors.new.length;
+      toast(`新旧规则共存在 ${total} 个语法错误`, true);
+      return;
+    }
+
+    regressionCount.textContent =
+      data.changed_count > 0 ? `${data.changed_count} 条路径变化` : "全部无变化";
+    renderRegressionResult(data);
+    toast(
+      data.changed_count > 0
+        ? `检查完成，${data.changed_count} 条路径发生变化`
+        : "检查完成，所有路径均无变化"
+    );
+  } catch (err) {
+    toast("网络错误，服务不可达", true);
+  } finally {
+    regressionBtn.disabled = false;
+    regressionBtn.textContent = "🧪 开始回归检查";
+  }
+}
+
+regressionBtn.addEventListener("click", runRegression);
+
+// Ctrl/Cmd + Alt + Enter 快捷回归检查
+document.addEventListener("keydown", (e) => {
+  if ((e.ctrlKey || e.metaKey) && e.altKey && e.key === "Enter") {
+    e.preventDefault();
+    runRegression();
   }
 });
 

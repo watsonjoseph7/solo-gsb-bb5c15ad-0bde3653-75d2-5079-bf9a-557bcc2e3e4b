@@ -11,7 +11,8 @@ from pydantic import BaseModel, Field, field_validator
 
 from .engine import parse_rules
 from .examples import EXAMPLES
-from .minimizer import MinimizeValidationError, MAX_PATHS, minimize_rules
+from .minimizer import MAX_PATHS, MinimizeValidationError, minimize_rules
+from .regression import regression_check
 from .simulator import simulate
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -96,6 +97,33 @@ class MinimizeResponse(BaseModel):
     results: list[PathOutcome] = []
 
 
+class RegressionRequest(BaseModel):
+    old_rules: str = Field("", description="旧版规则源文本（在调试台额外填写）")
+    rules: str = Field("", description="新版规则源文本（取自当前编辑器）")
+    paths: list[str] = Field(..., description="多条回归请求路径（每行一条）")
+    max_steps: int = Field(100, ge=1, le=500, description="步数上限")
+    follow_redirects: bool = Field(False, description="是否跟随站内重定向继续模拟")
+
+    @field_validator("paths")
+    @classmethod
+    def _check_paths(cls, value: list[str]) -> list[str]:
+        if not value:
+            raise ValueError("请至少输入一条回归请求路径")
+        if len(value) > MAX_PATHS:
+            raise ValueError(f"回归路径最多 {MAX_PATHS} 条")
+        for idx, raw in enumerate(value, start=1):
+            if not isinstance(raw, str):
+                raise ValueError(f"第 {idx} 条路径不是文本")
+            path = raw.strip()
+            if not path:
+                raise ValueError(f"第 {idx} 条请求路径为空")
+            if not path.startswith("/"):
+                raise ValueError(f"第 {idx} 条请求路径必须以 / 开头：{path}")
+            if any(ch in path for ch in (" ", "\n", "\r", "\t")):
+                raise ValueError(f"第 {idx} 条请求路径不能包含空白字符：{path}")
+        return value
+
+
 @app.get("/api/examples")
 def get_examples() -> list[dict]:
     return EXAMPLES
@@ -161,6 +189,21 @@ def minimize(req: MinimizeRequest) -> MinimizeResponse:
         attempts=outcome["attempts"],
         results=outcome["results"],
     )
+
+
+@app.post("/api/regression")
+def regression(req: RegressionRequest) -> dict:
+    try:
+        return regression_check(
+            req.old_rules,
+            req.rules,
+            req.paths,
+            max_steps=req.max_steps,
+            follow_redirects=req.follow_redirects,
+        )
+    except MinimizeValidationError as exc:
+        # 路径列表 / 规则数量不合法（而非规则语法错误）：明确报错，前端提示且不覆盖输入
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
 
 
 @app.get("/healthz")
