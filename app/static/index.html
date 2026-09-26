@@ -89,6 +89,43 @@
           <span id="minimizeCount" class="rule-count"></span>
         </div>
       </div>
+
+      <!-- 规则变更回归检查 -->
+      <div class="regression-box">
+        <div class="minimize-head">
+          <h2>🔬 规则变更回归检查</h2>
+          <span class="muted">以当前编辑器为新版，下方填写旧版规则，多路径定位首次分叉</span>
+        </div>
+        <p class="minimize-hint">
+          在下方填写<strong>旧版规则</strong>，以<strong>上方编辑器当前内容作为新版规则</strong>，
+          再输入多条请求路径（每行一条）。步数上限与跟随站内重定向选项直接沿用上方设置，
+          服务端分别解析两套规则并模拟每条路径：按最终状态码、URL、Location 与结束原因标记变化；
+          对变化路径跳过未命中步骤与源码行号，逐个比对命中的改写 / 重定向动作及其输入输出，
+          显示首次分叉的两侧原行号与动作；动作完全一致而结果不同则显示终止差异。
+        </p>
+        <span class="field-label">旧版规则（不改动上方编辑器内容）</span>
+        <textarea
+          id="regressionOldEditor"
+          class="regression-old-editor"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          wrap="off"
+          placeholder='REWRITE  ^/old/(.*)$  /new/$1  next&#10;REDIRECT ^/home$     /          301'></textarea>
+        <div id="regressionOldErrorList" class="error-list regression-error-list" hidden></div>
+        <span class="field-label">回归请求路径（每行一条，最多 50 条）</span>
+        <textarea
+          id="regressionPathsInput"
+          class="minimize-paths"
+          spellcheck="false"
+          autocapitalize="off"
+          autocomplete="off"
+          placeholder="/old/about&#10;/api/v1/users/42&#10;/docs/guide/install.html"></textarea>
+        <div class="actions">
+          <button id="regressionBtn" class="btn btn-primary" type="button">🔬 开始回归检查</button>
+          <span id="regressionCount" class="rule-count"></span>
+        </div>
+      </div>
     </section>
 
     <!-- 右：逐步执行轨迹 -->
@@ -132,6 +169,20 @@
         <button id="minimizeModalClose" class="modal-close" type="button" aria-label="关闭">✕</button>
       </div>
       <div id="minimizeModalBody" class="modal-body"></div>
+    </div>
+  </div>
+
+  <!-- 规则变更回归检查结果弹窗 -->
+  <div id="regressionModal" class="modal-overlay" hidden>
+    <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="regressionModalTitle">
+      <div class="modal-head">
+        <h2 id="regressionModalTitle">🔬 规则变更回归检查结果</h2>
+        <div class="modal-head-actions">
+          <button id="regressionCopyBtn" class="btn btn-secondary btn-tiny" type="button">📋 复制回归报告</button>
+          <button id="regressionModalClose" class="modal-close" type="button" aria-label="关闭">✕</button>
+        </div>
+      </div>
+      <div id="regressionModalBody" class="modal-body"></div>
     </div>
   </div>
 

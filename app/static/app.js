@@ -40,6 +40,16 @@ const minimizeModal = $("minimizeModal");
 const minimizeModalClose = $("minimizeModalClose");
 const minimizeModalBody = $("minimizeModalBody");
 
+const regressionOldEditor = $("regressionOldEditor");
+const regressionOldErrorList = $("regressionOldErrorList");
+const regressionPathsInput = $("regressionPathsInput");
+const regressionBtn = $("regressionBtn");
+const regressionCount = $("regressionCount");
+const regressionModal = $("regressionModal");
+const regressionModalClose = $("regressionModalClose");
+const regressionModalBody = $("regressionModalBody");
+const regressionCopyBtn = $("regressionCopyBtn");
+
 let lastResponse = null;
 let examples = [];
 let errorLineSet = new Set();
@@ -165,10 +175,11 @@ loadExampleBtn.addEventListener("click", () => {
 // 错误定位
 // ---------------------------------------------------------------------------
 
-function jumpToError(err) {
-  const lines = editor.value.split("\n");
+// 在指定 textarea 中选中某错误位置；服务端列基于「去空白与注释」后的行，
+// 需要加回首列空白偏移
+function selectErrorIn(target, err) {
+  const lines = target.value.split("\n");
   const rawLine = lines[err.line - 1] ?? "";
-  // 服务端的列基于「去掉首尾空白与注释」后的行，需要加回首列空白偏移
   const lead = rawLine.length - rawLine.trimStart().length;
   let offset = 0;
   for (let i = 0; i < err.line - 1; i++) offset += lines[i].length + 1;
@@ -176,29 +187,35 @@ function jumpToError(err) {
   const start = offset + lead + col;
   const length = Math.max(1, err.length || 1);
 
-  editor.focus();
-  editor.setSelectionRange(start, Math.min(start + length, editor.value.length));
-  // 滚动到目标行
-  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20;
-  editor.scrollTop = Math.max(0, (err.line - 1) * lineHeight - 40);
+  target.focus();
+  target.setSelectionRange(start, Math.min(start + length, target.value.length));
+  const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 20;
+  target.scrollTop = Math.max(0, (err.line - 1) * lineHeight - 40);
 }
 
-function renderErrors(errors) {
-  errorList.innerHTML = "";
-  errorLineSet = new Set();
+function jumpToError(err) {
+  selectErrorIn(editor, err);
+}
 
+// 渲染一组语法错误到指定容器；点击错误在对应编辑器中定位
+function renderErrorList(container, target, errors) {
+  container.innerHTML = "";
   errors.forEach((err) => {
-    errorLineSet.add(err.line);
     const item = el("div", "error-item");
     const pos = el("span", "error-pos", `第 ${err.line} 行 第 ${err.col} 列`);
     const msg = el("span", "error-msg", err.message);
     item.append(pos, msg);
     item.title = "点击跳转到错误位置";
-    item.addEventListener("click", () => jumpToError(err));
-    errorList.appendChild(item);
+    item.addEventListener("click", () => selectErrorIn(target, err));
+    container.appendChild(item);
   });
+  container.hidden = false;
+}
 
-  errorList.hidden = false;
+function renderErrors(errors) {
+  errorLineSet = new Set();
+  errors.forEach((err) => errorLineSet.add(err.line));
+  renderErrorList(errorList, editor, errors);
   editor.classList.add("has-error-line");
   renderGutter();
 }
@@ -771,9 +788,9 @@ function renderMinimizeResult(data) {
   minimizeModal.hidden = false;
 }
 
-// 在规则编辑器中定位某一原行号（选中该行）
-function focusEditorLine(lineNo) {
-  const text = editor.value;
+// 在指定 textarea 中定位并选中某一行（1 起始）
+function focusTextareaLine(target, lineNo) {
+  const text = target.value;
   let start = 0;
   for (let i = 1; i < lineNo; i += 1) {
     const next = text.indexOf("\n", start);
@@ -785,10 +802,15 @@ function focusEditorLine(lineNo) {
   }
   const nl = text.indexOf("\n", start);
   const end = nl === -1 ? text.length : nl;
-  editor.focus();
-  editor.setSelectionRange(start, Math.max(start, end));
-  const lineHeight = parseFloat(getComputedStyle(editor).lineHeight) || 20;
-  editor.scrollTop = Math.max(0, (lineNo - 1) * lineHeight - 40);
+  target.focus();
+  target.setSelectionRange(start, Math.max(start, end));
+  const lineHeight = parseFloat(getComputedStyle(target).lineHeight) || 20;
+  target.scrollTop = Math.max(0, (lineNo - 1) * lineHeight - 40);
+}
+
+// 在规则编辑器中定位某一原行号（选中该行）
+function focusEditorLine(lineNo) {
+  focusTextareaLine(editor, lineNo);
 }
 
 minimizeModalClose.addEventListener("click", closeMinimizeModal);
@@ -890,6 +912,414 @@ document.addEventListener("keydown", (e) => {
     runMinimize();
   }
 });
+
+// ---------------------------------------------------------------------------
+// 规则变更回归检查
+// ---------------------------------------------------------------------------
+
+let lastRegressionData = null;
+
+function clearOldErrors() {
+  regressionOldErrorList.hidden = true;
+  regressionOldErrorList.innerHTML = "";
+  regressionOldEditor.classList.remove("has-error-line");
+}
+
+regressionOldEditor.addEventListener("input", clearOldErrors);
+
+function formatTerminal(t) {
+  return {
+    status: `HTTP ${t.status}`,
+    final_url: t.final_url || "—",
+    location: t.location || "—",
+    finish_reason: REASON_TEXT[t.finish_reason] || t.finish_reason,
+  };
+}
+
+// 终局四格对照（有差异的字段标红）
+function renderTerminalGrid(oldT, newT) {
+  const grid = el("div", "rg-term-grid");
+  const fields = [
+    ["最终状态码", "status"],
+    ["最终 URL", "final_url"],
+    ["Location", "location"],
+    ["结束原因", "finish_reason"],
+  ];
+  const ov = formatTerminal(oldT);
+  const nv = formatTerminal(newT);
+  fields.forEach(([label, key]) => {
+    const equal = ov[key] === nv[key];
+    const cell = el("div", "rg-term-field");
+    cell.appendChild(el("span", "rg-term-label", label));
+    const vals = el("div", `rg-term-vals ${equal ? "" : "changed"}`);
+    const oldRow = el("div", "rg-term-val");
+    oldRow.appendChild(el("span", "min-path-tag", "旧"));
+    oldRow.appendChild(el("code", "", ov[key]));
+    const newRow = el("div", "rg-term-val");
+    newRow.appendChild(el("span", "min-path-tag", "新"));
+    newRow.appendChild(el("code", "", nv[key]));
+    vals.append(oldRow, newRow);
+    cell.appendChild(vals);
+    grid.appendChild(cell);
+  });
+  return grid;
+}
+
+function actionKindText(action) {
+  return action.kind === "redirect"
+    ? `重定向 HTTP ${action.status}`
+    : `改写 · ${action.flow === "last" ? "last 重启" : "next 继续"}`;
+}
+
+function actionInputOutput(action) {
+  const io = el("div", "rg-io");
+  io.appendChild(el("span", "io-in", action.input));
+  io.appendChild(el("span", "io-arrow", "→"));
+  io.appendChild(el("span", "io-out", action.output));
+  return io;
+}
+
+function renderTerminalMini(t) {
+  const wrap = el("div", "rg-term-mini");
+  const meta = `${t.steps} 步${t.hops ? ` · ${t.hops} 跳` : ""}`;
+  wrap.appendChild(el("span", "mini-item", `HTTP ${t.status}`));
+  wrap.appendChild(el("span", "mini-item", meta));
+  wrap.appendChild(
+    el("span", "mini-item", REASON_TEXT[t.finish_reason] || t.finish_reason)
+  );
+  return wrap;
+}
+
+// 分叉的一侧：动作 + 原行号胶囊；无动作（另一侧多出动作 / 已终止）时给说明
+function renderDivergenceSide(sideName, sideClass, action, terminal, lineClickTarget) {
+  const side = el("div", `rg-side ${sideClass}`);
+  const head = el("div", "rg-side-head");
+  head.appendChild(el("span", "rg-side-tag", sideName));
+
+  if (action) {
+    const chip = el("button", "rg-line-chip", `原第 ${action.line} 行`);
+    chip.type = "button";
+    chip.title = "点击定位到对应规则文本";
+    chip.addEventListener("click", () => focusTextareaLine(lineClickTarget, action.line));
+    head.appendChild(chip);
+    head.appendChild(
+      el(
+        "span",
+        `rg-action-kind ${action.kind === "redirect" ? "redirect-kind" : ""}`,
+        actionKindText(action)
+      )
+    );
+    side.appendChild(head);
+    side.appendChild(el("div", "rg-action-rule", action.rule));
+    side.appendChild(actionInputOutput(action));
+  } else {
+    side.appendChild(head);
+    side.appendChild(
+      el("div", "rg-side-note", "该侧在此位置已无命中动作（动作序列已结束，直接进入终局）")
+    );
+  }
+  side.appendChild(renderTerminalMini(terminal));
+  return side;
+}
+
+function renderDivergence(divergence) {
+  const box = el("div", `rg-divergence ${divergence.kind === "terminal" ? "terminal" : ""}`);
+
+  if (divergence.kind === "terminal") {
+    box.appendChild(
+      el(
+        "div",
+        "rg-divergence-title",
+        "⚙️ 命中动作及其输入输出完全一致，但最终结果不同 —— 终止差异"
+      )
+    );
+    box.appendChild(
+      el(
+        "div",
+        "rg-side-note",
+        "差异来自循环检测、步数 / 跳数上限等终止条件（动作本身逐条一致，已跳过行号比较）。"
+      )
+    );
+  } else {
+    box.appendChild(
+      el(
+        "div",
+        "rg-divergence-title",
+        `🔀 首次分叉：两侧第 ${divergence.index + 1} 个命中动作不一致` +
+          "（已跳过未命中步骤与源码行号）"
+      )
+    );
+    const sides = el("div", "rg-sides");
+    sides.appendChild(
+      renderDivergenceSide(
+        "旧版",
+        "old",
+        divergence.old_action,
+        divergence.old_terminal,
+        regressionOldEditor
+      )
+    );
+    sides.appendChild(
+      renderDivergenceSide(
+        "新版",
+        "new",
+        divergence.new_action,
+        divergence.new_terminal,
+        editor
+      )
+    );
+    box.appendChild(sides);
+  }
+  return box;
+}
+
+function renderRegressionPathCard(item) {
+  const card = el("div", `rg-path-card ${item.changed ? "changed" : ""}`);
+  const head = el("div", "rg-path-head");
+  head.appendChild(el("code", "rg-path-name", item.path));
+  head.appendChild(
+    el(
+      "span",
+      `rg-badge ${item.changed ? "bad" : "ok"}`,
+      item.changed
+        ? `✗ 结果变化（${item.changed_fields.length} 项）`
+        : "✓ 结果一致"
+    )
+  );
+  card.appendChild(head);
+  card.appendChild(renderTerminalGrid(item.old.terminal, item.new.terminal));
+  if (item.divergence) card.appendChild(renderDivergence(item.divergence));
+  return card;
+}
+
+function renderRegressionOkRow(item) {
+  const row = el("div", "rg-ok-row");
+  row.appendChild(el("code", "", item.path));
+  const t = item.new.terminal;
+  row.appendChild(el("span", "muted", `HTTP ${t.status} · ${t.final_url}`));
+  return row;
+}
+
+function closeRegressionModal() {
+  regressionModal.hidden = true;
+  regressionModalBody.innerHTML = "";
+}
+
+function renderRegressionResult(data) {
+  lastRegressionData = data;
+  regressionModalBody.innerHTML = "";
+
+  // 概要
+  const summaryRow = el("div", "rg-summary");
+  if (data.changed_count === 0) {
+    summaryRow.appendChild(
+      el("strong", "", `✅ ${data.paths.length} 条路径全部回归通过，新旧结果一致`)
+    );
+  } else {
+    summaryRow.appendChild(
+      el(
+        "strong",
+        "",
+        `⚠️ ${data.changed_count} 条路径结果变化，${data.unchanged_count} 条保持一致`
+      )
+    );
+  }
+  summaryRow.appendChild(
+    el(
+      "span",
+      "muted",
+      `旧版 ${data.old_rule_count} 条规则 · 新版 ${data.new_rule_count} 条规则 · 共 ${data.paths.length} 条路径`
+    )
+  );
+  regressionModalBody.appendChild(summaryRow);
+
+  // 变化路径
+  const changed = data.results.filter((r) => r.changed);
+  if (changed.length) {
+    regressionModalBody.appendChild(
+      el("div", "rg-section-title", `变化路径（${changed.length}）`)
+    );
+    changed.forEach((item) =>
+      regressionModalBody.appendChild(renderRegressionPathCard(item))
+    );
+  }
+
+  // 未变化路径（紧凑列表）
+  const unchanged = data.results.filter((r) => !r.changed);
+  if (unchanged.length) {
+    regressionModalBody.appendChild(
+      el("div", "rg-section-title", `未变化路径（${unchanged.length}）`)
+    );
+    const list = el("div", "rg-ok-list");
+    unchanged.forEach((item) => list.appendChild(renderRegressionOkRow(item)));
+    regressionModalBody.appendChild(list);
+  }
+
+  regressionModal.hidden = false;
+}
+
+// 纯文本回归报告（复制用）
+function buildRegressionReport(data) {
+  const lines = [];
+  lines.push("URL 重写规则变更回归检查报告");
+  lines.push("=".repeat(56));
+  lines.push(
+    `旧版 ${data.old_rule_count} 条规则 / 新版 ${data.new_rule_count} 条规则，` +
+      `共 ${data.paths.length} 条路径：` +
+      `${data.changed_count} 条变化，${data.unchanged_count} 条一致`
+  );
+  lines.push("");
+
+  data.results.forEach((item) => {
+    const ot = item.old.terminal;
+    const nt = item.new.terminal;
+    lines.push(
+      `${item.changed ? "[变化]" : "[一致]"} ${item.path}` +
+        `  旧: HTTP ${ot.status} ${ot.final_url}` +
+        (ot.location ? ` (Location: ${ot.location})` : "") +
+        `  新: HTTP ${nt.status} ${nt.final_url}` +
+        (nt.location ? ` (Location: ${nt.location})` : "")
+    );
+    const d = item.divergence;
+    if (!d) return;
+    if (d.kind === "terminal") {
+      lines.push(
+        "    终止差异：命中动作及输入输出完全一致，差异来自终止条件" +
+          `（旧 ${REASON_TEXT[ot.finish_reason] || ot.finish_reason} /` +
+          ` 新 ${REASON_TEXT[nt.finish_reason] || nt.finish_reason}）`
+      );
+    } else {
+      const fmt = (a) => {
+        if (!a) return "该侧已无命中动作";
+        return `原第 ${a.line} 行 ${actionKindText(a)}：${a.rule} | ${a.input} -> ${a.output}`;
+      };
+      lines.push(`    首次分叉（第 ${d.index + 1} 个命中动作）：`);
+      lines.push(`      旧版 ${fmt(d.old_action)}`);
+      lines.push(`      新版 ${fmt(d.new_action)}`);
+    }
+  });
+  return lines.join("\n");
+}
+
+regressionCopyBtn.addEventListener("click", () => {
+  if (!lastRegressionData) return;
+  copyText(buildRegressionReport(lastRegressionData), "已复制回归检查报告");
+});
+
+regressionModalClose.addEventListener("click", closeRegressionModal);
+regressionModal.addEventListener("click", (e) => {
+  if (e.target === regressionModal) closeRegressionModal();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && !regressionModal.hidden) closeRegressionModal();
+});
+
+async function runRegression() {
+  const rawPaths = regressionPathsInput.value
+    .split(/\r?\n/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 0);
+
+  const message = validateMinimizePaths(rawPaths);
+  if (message) {
+    toast(message.replace("待保障", "待回归"), true);
+    regressionPathsInput.focus();
+    return;
+  }
+
+  const maxSteps = parseInt(maxStepsInput.value, 10);
+  if (!Number.isFinite(maxSteps) || maxSteps < 1 || maxSteps > 500) {
+    toast("步数上限需为 1–500 之间的整数", true);
+    maxStepsInput.focus();
+    return;
+  }
+
+  const body = {
+    old_rules: regressionOldEditor.value,
+    new_rules: editor.value,
+    paths: rawPaths,
+    max_steps: maxSteps,
+    follow_redirects: followRedirectsInput.checked,
+  };
+
+  regressionBtn.disabled = true;
+  regressionBtn.textContent = "⏳ 检查中…";
+  regressionCount.textContent = "";
+
+  try {
+    const res = await fetch("/api/regression", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+
+    if (res.status === 422 || res.status === 400) {
+      const payload = await res.json();
+      let msg;
+      if (payload.detail && payload.detail[0]) {
+        msg = payload.detail[0].msg;
+      } else if (typeof payload.detail === "string") {
+        msg = payload.detail;
+      } else {
+        msg = "请求参数不合法";
+      }
+      msg = msg.replace(/^Value error,\s*/, "").replace("待保障", "待回归");
+      toast(msg, true);
+      return;
+    }
+
+    const data = await res.json();
+
+    if (!data.ok) {
+      // 两侧语法错误分别提示、互不覆盖输入：
+      // 新版（当前编辑器）错误复用主错误列表；旧版错误显示在旧版编辑器下方
+      const oldN = (data.old_errors || []).length;
+      const newN = (data.new_errors || []).length;
+      if (newN) {
+        renderErrors(data.new_errors);
+      } else {
+        errorList.hidden = true;
+        errorLineSet = new Set();
+        editor.classList.remove("has-error-line");
+        renderGutter();
+      }
+      if (oldN) {
+        renderErrorList(
+          regressionOldErrorList,
+          regressionOldEditor,
+          data.old_errors
+        );
+        regressionOldEditor.classList.add("has-error-line");
+      } else {
+        clearOldErrors();
+      }
+      const parts = [];
+      if (oldN) parts.push(`旧版规则 ${oldN} 个语法错误`);
+      if (newN) parts.push(`新版（编辑器）规则 ${newN} 个语法错误`);
+      toast(parts.join("；") + "，请先修正再检查", true);
+      return;
+    }
+
+    clearOldErrors();
+    regressionCount.textContent =
+      data.changed_count === 0
+        ? `✓ ${data.paths.length} 条全部一致`
+        : `${data.changed_count}/${data.paths.length} 条变化`;
+    renderRegressionResult(data);
+    toast(
+      data.changed_count === 0
+        ? "回归通过：新旧规则结果一致"
+        : `发现 ${data.changed_count} 条路径结果变化`
+    );
+  } catch (err) {
+    toast("网络错误，服务不可达", true);
+  } finally {
+    regressionBtn.disabled = false;
+    regressionBtn.textContent = "🔬 开始回归检查";
+  }
+}
+
+regressionBtn.addEventListener("click", runRegression);
 
 // ---------------------------------------------------------------------------
 // 初始化
